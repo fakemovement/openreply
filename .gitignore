@@ -43,3 +43,6 @@ next-env.d.ts
 
 /app/generated/prisma
 .gstack/
+railway-worker-vars.txt
+PASTE-INTO-RAILWAY.txt
+env.txt

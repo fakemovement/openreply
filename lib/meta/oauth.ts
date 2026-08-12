@@ -7,7 +7,15 @@ import {
 } from "crypto";
 import { getEncryptionKeyHex, requireEnv } from "@/lib/env";
 
-const INSTAGRAM_OAUTH_URL = "https://api.instagram.com/oauth/authorize";
+// Instagram API with Instagram Login authorizes on www.instagram.com. The old
+// api.instagram.com/oauth/authorize endpoint is Basic Display's, and it still
+// answers: it 302s to this URL, so the login dialog looks perfectly healthy.
+// The code it hands back is issued under the legacy flow, though, and the
+// token exchange then rejects it with "Error validating verification code.
+// Please make sure your redirect_uri is identical..." — a misleading message
+// that sends you hunting a redirect URI that was correct all along. Meta's own
+// Embed URL, on the "Set up Instagram business login" screen, is authoritative.
+const INSTAGRAM_OAUTH_URL = "https://www.instagram.com/oauth/authorize";
 const INSTAGRAM_TOKEN_URL = "https://api.instagram.com/oauth/access_token";
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16;
