@@ -110,8 +110,26 @@ export async function exchangeCodeForToken(
 
   if (!response.ok) {
     const error = await response.json();
+    // Meta answers several unrelated failures with the same "make sure your
+    // redirect_uri is identical" text, so the message alone cannot tell you
+    // which one you hit. Echo back what was actually sent, minus anything
+    // secret: the authorize host proves which build is live, the redirect_uri
+    // can be compared against the registered one character by character, and
+    // the two secret checks catch the common mistake of pasting the Facebook
+    // app secret into both variables.
+    const sent = [
+      `authorize_host=${new URL(INSTAGRAM_OAUTH_URL).host}`,
+      `redirect_uri=${redirectUri}`,
+      `client_id=${requireEnv("INSTAGRAM_APP_ID")}`,
+      `secret_len=${requireEnv("INSTAGRAM_APP_SECRET").length}`,
+      `secrets_identical=${
+        process.env.INSTAGRAM_APP_SECRET === process.env.FACEBOOK_APP_SECRET
+      }`,
+    ].join(" | ");
     throw new Error(
-      `Token exchange failed: ${error.error_message || JSON.stringify(error)}`
+      `Token exchange failed: ${
+        error.error_message || JSON.stringify(error)
+      } || SENT: ${sent}`
     );
   }
 
