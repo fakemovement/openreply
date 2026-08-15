@@ -5,10 +5,6 @@
       "schedule": "0 5 * * *"
     },
     {
-      "path": "/api/cron/attach-next-reel",
-      "schedule": "0 6 * * *"
-    },
-    {
       "path": "/api/cron/snapshot-followers",
       "schedule": "0 7 * * *"
     }

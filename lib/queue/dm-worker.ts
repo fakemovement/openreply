@@ -26,6 +26,7 @@ import {
   sendPrivateReplyWithLinkButton,
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
+import { attachPendingNextReel } from "@/lib/automations/attach-next-reel";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
 import { reserveDMSlot } from "@/lib/utils/rate-limiter";
 import {
@@ -198,6 +199,30 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     mediaId,
   } = job.data;
   const requeueAttempt = job.data.requeueAttempt ?? 0;
+
+  // A "next reel" campaign carries no postId, so the query below would match
+  // nothing and the campaign would sleep through its own launch. This comment
+  // names the media it was left on, which is all the binder needs, so bind
+  // first and let the campaign fire on the very first comment it receives.
+  const hasPendingNextReel = await prisma.automation.findFirst({
+    where: {
+      pendingNextReel: true,
+      instagramAccount: { instagramId: instagramAccountId },
+    },
+    select: { id: true },
+  });
+  if (hasPendingNextReel) {
+    try {
+      await attachPendingNextReel({ instagramId: instagramAccountId });
+    } catch (error) {
+      // Binding is best effort: a campaign already bound to this post must
+      // still get its DM out even if the lookup for the pending one failed.
+      console.error(
+        "[DM Worker] Failed to bind pending next-reel campaign:",
+        formatError(error)
+      );
+    }
+  }
 
   const automations = await prisma.automation.findMany({
     where: {
