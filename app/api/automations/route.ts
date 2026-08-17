@@ -9,11 +9,67 @@ import { buildReportUrl, generateReportShareSlug } from "@/lib/reports/share";
 import {
   canManageWorkspace,
   getCurrentWorkspaceContext,
+  type WorkspaceContext,
 } from "@/lib/workspace-access";
+import { resolveApiToken } from "@/lib/api-token";
 
 // This list is read-your-writes (created/imported campaigns must show up
 // immediately), so never cache it at the route or CDN layer.
 export const dynamic = "force-dynamic";
+
+/**
+ * Campaigns are the one thing that has to be reachable without a browser: the
+ * dashboard is behind a magic link, so a launch script has no way to sign in.
+ * A bearer token is tried first and the cookie session second, which keeps the
+ * human path completely unchanged — no header, no difference.
+ *
+ * `misconfigured` is deliberately loud rather than a silent fall-through to
+ * 401. A token that is set but unusable is an operator mistake, and reporting
+ * it as "Unauthorized" is how you spend an afternoon re-pasting a correct
+ * secret.
+ */
+type AuthOutcome =
+  | { ok: true; context: WorkspaceContext }
+  | { ok: false; response: NextResponse };
+
+async function authorize(request: NextRequest): Promise<AuthOutcome> {
+  const token = await resolveApiToken(request);
+
+  if (token.status === "ok") return { ok: true, context: token.context };
+
+  if (token.status === "misconfigured") {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { success: false, error: `API token misconfigured: ${token.reason}` },
+        { status: 500 }
+      ),
+    };
+  }
+
+  if (token.status === "invalid") {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { success: false, error: "Invalid API token" },
+        { status: 401 }
+      ),
+    };
+  }
+
+  const context = await getCurrentWorkspaceContext();
+  if (!context) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { success: false, error: "Unauthorized" },
+        { status: 401 }
+      ),
+    };
+  }
+
+  return { ok: true, context };
+}
 
 const createAutomationSchema = z
   .object({
@@ -122,13 +178,10 @@ const updateAutomationSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  const workspaceId = await getCurrentWorkspaceId();
-  if (!workspaceId) {
-    return NextResponse.json(
-      { success: false, error: "Unauthorized" },
-      { status: 401 }
-    );
-  }
+  const auth = await authorize(request);
+  if (!auth.ok) return auth.response;
+  const workspaceId = auth.context.workspaceId;
+
   const instagramAccountId =
     request.nextUrl.searchParams.get("instagramAccountId");
   const accountFilter =
@@ -276,13 +329,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const context = await getCurrentWorkspaceContext();
-  if (!context) {
-    return NextResponse.json(
-      { success: false, error: "Unauthorized" },
-      { status: 401 }
-    );
-  }
+  const auth = await authorize(request);
+  if (!auth.ok) return auth.response;
+  const context = auth.context;
 
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
@@ -446,13 +495,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  const context = await getCurrentWorkspaceContext();
-  if (!context) {
-    return NextResponse.json(
-      { success: false, error: "Unauthorized" },
-      { status: 401 }
-    );
-  }
+  const auth = await authorize(request);
+  if (!auth.ok) return auth.response;
+  const context = auth.context;
 
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
@@ -608,13 +653,9 @@ export async function PATCH(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const context = await getCurrentWorkspaceContext();
-  if (!context) {
-    return NextResponse.json(
-      { success: false, error: "Unauthorized" },
-      { status: 401 }
-    );
-  }
+  const auth = await authorize(request);
+  if (!auth.ok) return auth.response;
+  const context = auth.context;
 
   if (!canManageWorkspace(context.role)) {
     return NextResponse.json(
