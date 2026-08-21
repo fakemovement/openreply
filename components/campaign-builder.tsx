@@ -45,6 +45,9 @@ interface LoadedCampaign {
   requireFollow: boolean;
   followPromptMessage: string | null;
   followPromptButtonLabel: string | null;
+  followNudgeEnabled: boolean;
+  followNudgeMessage: string | null;
+  nudgeUnknownContacts: boolean;
   followUpEnabled: boolean;
   followUpMessage: string | null;
   followUpDelayMinutes: number | null;
@@ -177,6 +180,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [followPromptMessage, setFollowPromptMessage] = useState("");
   const [followPromptButtonLabel, setFollowPromptButtonLabel] =
     useState("i'm following");
+  const [followNudgeEnabled, setFollowNudgeEnabled] = useState(false);
+  const [followNudgeMessage, setFollowNudgeMessage] = useState("");
+  const [nudgeUnknownContacts, setNudgeUnknownContacts] = useState(false);
   const [followUpEnabled, setFollowUpEnabled] = useState(false);
   const [followUpMessage, setFollowUpMessage] = useState("");
   const [followUpDelayMinutes, setFollowUpDelayMinutes] = useState(0);
@@ -285,6 +291,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
         setFollowPromptButtonLabel(
           c.followPromptButtonLabel ?? "i'm following"
         );
+        setFollowNudgeEnabled(c.followNudgeEnabled ?? false);
+        setFollowNudgeMessage(c.followNudgeMessage ?? "");
+        setNudgeUnknownContacts(c.nudgeUnknownContacts ?? false);
         setFollowUpEnabled(c.followUpEnabled ?? false);
         setFollowUpMessage(c.followUpMessage ?? "");
         setFollowUpDelayMinutes(c.followUpDelayMinutes ?? 0);
@@ -391,7 +400,10 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       return setError("Pick a post or reel to trigger the campaign.");
     if (matchMode === "specific" && keywords.length === 0)
       return setError("Add at least one keyword, or switch to any word.");
-    if (!dmMessage.trim()) return setError("Add the DM with the link.");
+    if (followNudgeEnabled && !followNudgeMessage.trim())
+      return setError("Write the DM the non-followers will get.");
+    if (!followNudgeEnabled && !dmMessage.trim())
+      return setError("Add the DM with the link.");
     if (openingDmEnabled && (!openingDmMessage.trim() || !openingDmButtonLabel.trim()))
       return setError("Your opening DM needs a message and a button label.");
 
@@ -424,6 +436,9 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
       followPromptButtonLabel: requireFollow
         ? followPromptButtonLabel.trim() || "i'm following"
         : "",
+      followNudgeEnabled,
+      followNudgeMessage: followNudgeEnabled ? followNudgeMessage.trim() : "",
+      nudgeUnknownContacts: followNudgeEnabled ? nudgeUnknownContacts : false,
       followUpEnabled,
       followUpMessage: followUpEnabled ? followUpMessage.trim() : "",
       followUpDelayMinutes: followUpEnabled ? followUpDelayMinutes : 0,
@@ -796,6 +811,52 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
           )}
         </Section>
 
+        <Section title="Only if they don't follow you">
+          <div className="rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-foreground">
+                ask them to follow, and send nothing to your followers
+              </span>
+              <Toggle
+                on={followNudgeEnabled}
+                onToggle={() => setFollowNudgeEnabled(!followNudgeEnabled)}
+              />
+            </div>
+            {followNudgeEnabled && (
+              <div className="mt-3 space-y-2">
+                <textarea
+                  value={followNudgeMessage}
+                  onChange={(e) => setFollowNudgeMessage(e.target.value)}
+                  placeholder="hey! thanks for the comment 🙌 i noticed you're not following yet. i post these every week, follow so you don't miss the next one"
+                  rows={3}
+                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
+                  maxLength={1000}
+                />
+                <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+                  <span className="text-sm text-foreground">
+                    also DM the people Instagram won&apos;t let us check
+                  </span>
+                  <Toggle
+                    on={nudgeUnknownContacts}
+                    onToggle={() =>
+                      setNudgeUnknownContacts(!nudgeUnknownContacts)
+                    }
+                  />
+                </div>
+                <p className="text-xs text-muted">
+                  Someone who already follows you gets nothing at all. Instagram
+                  only reveals who follows you for people who have messaged your
+                  account before, so everyone else counts as unknown and is left
+                  alone unless you turn the switch above on. Nobody is asked
+                  twice within 30 days, and this campaign sends no link.
+                </p>
+              </div>
+            )}
+          </div>
+        </Section>
+
+        {!followNudgeEnabled && (
+        <>
         <Section title="They will get">
           <div className="rounded-lg border border-border p-3">
             <div className="flex items-center justify-between">
@@ -977,6 +1038,8 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             )}
           </div>
         </Section>
+        </>
+        )}
       </div>
 
       {/* Right: preview */}
@@ -994,21 +1057,33 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
             dmTriggerEnabled={dmTriggerEnabled}
             publicReplyEnabled={publicReplyEnabled}
             publicReplyMessage={publicReplyMessages.find((m) => m.trim()) ?? ""}
-            openingDmEnabled={openingDmEnabled}
+            openingDmEnabled={!followNudgeEnabled && openingDmEnabled}
             openingDmMessage={openingDmMessage}
             openingDmButtonLabel={openingDmButtonLabel}
-            revealMessage={dmMessage}
-            hasLink={Boolean(trackedDestinationUrl.trim())}
+            // A nudge campaign has one message and no link, so the preview
+            // shows that message on its own.
+            revealMessage={
+              followNudgeEnabled ? followNudgeMessage : dmMessage
+            }
+            hasLink={
+              !followNudgeEnabled && Boolean(trackedDestinationUrl.trim())
+            }
             linkButtonLabel={linkButtonLabel || "Open link"}
-            linkUrl={trackedDestinationUrl.trim() || undefined}
+            linkUrl={
+              followNudgeEnabled
+                ? undefined
+                : trackedDestinationUrl.trim() || undefined
+            }
             hasSecondLink={
-              secondLinkOpen && Boolean(secondaryDestinationUrl.trim())
+              !followNudgeEnabled &&
+              secondLinkOpen &&
+              Boolean(secondaryDestinationUrl.trim())
             }
             secondLinkButtonLabel={secondaryButtonLabel || "Open link"}
-            requireFollow={requireFollow}
+            requireFollow={!followNudgeEnabled && requireFollow}
             followPromptMessage={followPromptMessage}
             followPromptButtonLabel={followPromptButtonLabel || "i'm following"}
-            followUpEnabled={followUpEnabled}
+            followUpEnabled={!followNudgeEnabled && followUpEnabled}
             followUpMessage={followUpMessage}
             followUpDelayMinutes={followUpDelayMinutes}
           />

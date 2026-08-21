@@ -37,6 +37,8 @@ const STATUS_FILTERS = [
   "SKIPPED_RATE_LIMIT",
   "SKIPPED_PLAN_LIMIT",
   "SKIPPED_DEDUP",
+  "SKIPPED_ALREADY_FOLLOWS",
+  "SKIPPED_FOLLOW_UNKNOWN",
 ];
 
 export default function LogsPage() {

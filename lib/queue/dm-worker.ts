@@ -12,6 +12,7 @@ import {
   type ProcessFollowUpJob,
 } from "./client";
 import { prisma } from "@/lib/db/client";
+import type { DmStatus } from "@/app/generated/prisma/client";
 import {
   MetaApiError,
   RateLimitError,
@@ -26,6 +27,12 @@ import {
   sendPrivateReplyWithLinkButton,
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
+import {
+  isInNudgeCooldown,
+  recordFollowNudge,
+  recordFollowStatus,
+  resolveFollowState,
+} from "@/lib/follow/state";
 import { attachPendingNextReel } from "@/lib/automations/attach-next-reel";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
 import { reserveDMSlot } from "@/lib/utils/rate-limiter";
@@ -248,7 +255,16 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     orderBy: { createdAt: "asc" },
   });
 
-  for (const automation of automations) {
+  // Instagram allows exactly one private reply per comment, so whichever
+  // campaign runs first claims it. A follow nudge must never take that slot
+  // from a campaign that owes the commenter a link, so nudges go last.
+  const ordered = [...automations].sort(
+    (a, b) =>
+      Number(Boolean(a.followNudgeEnabled)) -
+      Number(Boolean(b.followNudgeEnabled))
+  );
+
+  for (const automation of ordered) {
     // "Any word" campaigns fire on every comment; otherwise require a keyword hit.
     const matchResult = automation.matchAnyWord
       ? { matched: true, matchedKeyword: null }
@@ -340,6 +356,72 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
       });
       continue;
+    }
+
+    // Follow nudge. This campaign shape sends nothing to the people who already
+    // follow — that silence is the whole feature — so the decision is made
+    // before any quota or rate-limit slot is spent. Only a commenter Instagram
+    // has positively described as a non-follower falls through to the send.
+    let nudgeText: string | null = null;
+    if (automation.followNudgeEnabled) {
+      const nudgeLogBase = {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId,
+        commenterName,
+        commentText,
+        commentId,
+        matchedKeyword: matchResult.matchedKeyword,
+      };
+      const skip = async (status: DmStatus, reason: string) => {
+        await prisma.dmLog.upsert({
+          where: {
+            automationId_commentId: { automationId: automation.id, commentId },
+          },
+          create: { ...nudgeLogBase, status, errorMessage: reason },
+          update: { status, errorMessage: reason },
+        });
+      };
+
+      const state = await resolveFollowState(
+        accessToken,
+        automation.instagramAccountId,
+        commenterId
+      );
+
+      if (state.follows === true) {
+        await skip(
+          "SKIPPED_ALREADY_FOLLOWS",
+          `Already follows you (${state.source})`
+        );
+        continue;
+      }
+
+      if (state.follows === null) {
+        // Instagram will not describe someone who has never messaged the
+        // account. Staying quiet is the default: it can't nudge a follower by
+        // mistake, at the cost of never nudging a stranger either.
+        if (!automation.nudgeUnknownContacts) {
+          await skip(
+            "SKIPPED_FOLLOW_UNKNOWN",
+            "Instagram won't reveal follow status for someone who has never messaged you"
+          );
+          continue;
+        }
+      }
+
+      if (isInNudgeCooldown(state.nudgedAt)) {
+        await skip(
+          "SKIPPED_DEDUP",
+          "Already nudged this person recently; not asking again yet"
+        );
+        continue;
+      }
+
+      nudgeText =
+        automation.followNudgeMessage?.trim() ||
+        "hey! thanks for commenting 🙌 i noticed you're not following yet. i post these every week, follow so you don't miss the next one";
     }
 
     // Ensure a log row exists before the public reply leg (which updates it).
@@ -549,7 +631,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // With an opening DM, the private reply is a button message; tapping it
     // fires a postback that delivers the reveal (see processPostback). Without
     // one, we send the reveal text directly as today.
+    // A nudge campaign delivers no link, so none of the link machinery applies.
     const useOpeningDm =
+      !nudgeText &&
       automation.openingDmEnabled &&
       Boolean(automation.openingDmMessage) &&
       Boolean(automation.openingDmButtonLabel);
@@ -560,13 +644,25 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // status at comment time: confirmed followers get the link now, everyone
     // else gets the "follow me first" prompt (re-verified on tap).
     let sendFollowPrompt = false;
-    if (automation.requireFollow && !useOpeningDm) {
-      const alreadyFollows = await getUserFollowStatus(accessToken, commenterId);
-      sendFollowPrompt = alreadyFollows !== true;
+    if (automation.requireFollow && !useOpeningDm && !nudgeText) {
+      const state = await resolveFollowState(
+        accessToken,
+        automation.instagramAccountId,
+        commenterId
+      );
+      sendFollowPrompt = state.follows !== true;
     }
 
     try {
-      if (useOpeningDm) {
+      if (nudgeText) {
+        await sendPrivateReply(
+          accessToken,
+          automation.instagramAccount.instagramId,
+          commentId,
+          renderMessageWithoutLink({ message: nudgeText, commenterName })
+        );
+        await recordFollowNudge(automation.instagramAccountId, commenterId);
+      } else if (useOpeningDm) {
         const openingText = renderMessageWithTracking({
           message: automation.openingDmMessage as string,
           commenterName,
@@ -769,7 +865,14 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   // unverifiable (null), falls through and delivers the link — fail-open so a
   // real follower is never trapped.
   if ((isFollowCheck || fallback) && automation.requireFollow) {
+    // Deliberately a live read, not the stored one: they may have followed
+    // seconds ago, and a cached "no" would trap a real follower. Whatever comes
+    // back is written down, which is how the follow-nudge campaigns learn who
+    // does and doesn't follow.
     const follows = await getUserFollowStatus(accessToken, userId);
+    if (follows !== null) {
+      await recordFollowStatus(automation.instagramAccountId, userId, follows);
+    }
     if (follows === false) {
       if (fallback) return;
       const promptText = renderMessageWithoutLink({
@@ -966,6 +1069,9 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const automations = await prisma.automation.findMany({
     where: {
       dmTriggerEnabled: true,
+      // A follow nudge answers comments only. Someone who is already in your
+      // DMs does not need a private reply telling them to follow.
+      followNudgeEnabled: false,
       isActive: true,
       instagramAccount: { instagramId: instagramAccountId },
     },
@@ -1083,7 +1189,16 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
     // anyone whose status the API happens not to resolve.
     let sendFollowPrompt = false;
     if (automation.requireFollow) {
+      // Live read for the same reason as the postback path, and recorded so the
+      // follow-nudge campaigns inherit what this DM just taught us.
       const follows = await getUserFollowStatus(accessToken, senderId);
+      if (follows !== null) {
+        await recordFollowStatus(
+          automation.instagramAccountId,
+          senderId,
+          follows
+        );
+      }
       sendFollowPrompt = follows !== true;
     }
 

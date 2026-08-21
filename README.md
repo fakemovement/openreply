@@ -29,6 +29,7 @@ OpenReply is built around Meta's official Instagram private replies. It does not
 - Tracked links. Swap a link for a tracked redirect and see clicks and CTR per campaign.
 - Two link buttons. Send up to two tappable link buttons in one DM, each a separate tracked link with its own click stats.
 - Follow gate. Optionally require a follow before you hand over the link. The DM asks the commenter to follow and tap a button; on tap, OpenReply checks Meta's `is_user_follow_business` flag and only sends the link once they follow, re-prompting until then. It fails open (sends the link anyway) when Instagram does not return follow status, so a real follower is never trapped.
+- Follow nudge. The opposite of the gate: no link, no reward, just a DM to the people who comment without following, and total silence for the ones who already do. Instagram will only reveal follow status for someone who has messaged your account before (a plain commenter gets "user consent is required"), so OpenReply writes down every answer it ever gets, from any campaign, and reuses it. Anyone still unreadable is left alone by default; a per-campaign switch nudges them anyway. Nobody is nudged twice within 30 days.
 - Personalization. Use `{username}` in your message to greet the commenter by name.
 - Per-account rate limiting. Stays under Meta's documented cap of 750 private replies per hour, and queues the overflow instead of dropping it.
 - Multiple Instagram accounts. Connect several professional accounts under one workspace, each with its own limits.

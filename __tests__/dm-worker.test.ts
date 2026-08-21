@@ -31,6 +31,10 @@ const {
     instagramAccount: {
       findUnique: vi.fn(),
     },
+    contactFollowState: {
+      findUnique: vi.fn(),
+      upsert: vi.fn(),
+    },
     operationalEvent: {
       create: vi.fn(),
     },
@@ -273,6 +277,10 @@ beforeEach(() => {
     message_id: "msg_006",
   });
   mockGetUserFollowStatus.mockResolvedValue(true);
+  // Nothing remembered about anyone by default, so every test starts from the
+  // live call unless it says otherwise.
+  mockPrisma.contactFollowState.findUnique.mockResolvedValue(null);
+  mockPrisma.contactFollowState.upsert.mockResolvedValue({});
 });
 
 describe("DM Worker — Full Pipeline", () => {
@@ -1082,6 +1090,179 @@ describe("DM Worker — DM keyword trigger", () => {
     expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({ status: "FAILED" }),
+      })
+    );
+  });
+});
+
+describe("DM Worker — follow nudge", () => {
+  const nudgeAutomation = {
+    ...mockAutomation,
+    matchAnyWord: true,
+    followNudgeEnabled: true,
+    followNudgeMessage: "hey {username}, follow me so you don't miss the next one",
+    nudgeUnknownContacts: false,
+  };
+
+  it("sends nothing at all when the commenter already follows", async () => {
+    mockGetUserFollowStatus.mockResolvedValue(true);
+    mockPrisma.automation.findMany.mockResolvedValue([nudgeAutomation]);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
+    // And no send quota was spent on the silence.
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ status: "SKIPPED_ALREADY_FOLLOWS" }),
+      })
+    );
+  });
+
+  it("nudges a confirmed non-follower", async () => {
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    mockPrisma.automation.findMany.mockResolvedValue([nudgeAutomation]);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "hey commenter_user, follow me so you don't miss the next one"
+    );
+    // The nudge is recorded against the person, so the cooldown can start.
+    expect(mockPrisma.contactFollowState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ nudgedAt: expect.any(Date) }),
+      })
+    );
+  });
+
+  it("stays silent when Instagram will not reveal follow status", async () => {
+    mockGetUserFollowStatus.mockResolvedValue(null); // no consent, no answer
+    mockPrisma.automation.findMany.mockResolvedValue([nudgeAutomation]);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ status: "SKIPPED_FOLLOW_UNKNOWN" }),
+      })
+    );
+  });
+
+  it("nudges an unreadable commenter when the account opts into it", async () => {
+    mockGetUserFollowStatus.mockResolvedValue(null);
+    mockPrisma.automation.findMany.mockResolvedValue([
+      { ...nudgeAutomation, nudgeUnknownContacts: true },
+    ]);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "hey commenter_user, follow me so you don't miss the next one"
+    );
+  });
+
+  it("uses a remembered follow status when Instagram refuses to answer", async () => {
+    mockGetUserFollowStatus.mockResolvedValue(null);
+    mockPrisma.contactFollowState.findUnique.mockResolvedValue({
+      instagramAccountId: "ig_account_row_1",
+      contactId: "commenter_999",
+      follows: true,
+      checkedAt: new Date(),
+      nudgedAt: null,
+    });
+    mockPrisma.automation.findMany.mockResolvedValue([nudgeAutomation]);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    // Remembered as a follower, so nothing is sent and Instagram is not even
+    // asked again while the record is fresh.
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not nudge the same person twice inside the cooldown", async () => {
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    mockPrisma.contactFollowState.findUnique.mockResolvedValue({
+      instagramAccountId: "ig_account_row_1",
+      contactId: "commenter_999",
+      follows: false,
+      checkedAt: new Date(),
+      nudgedAt: new Date(),
+    });
+    mockPrisma.automation.findMany.mockResolvedValue([nudgeAutomation]);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+  });
+
+  it("lets a link campaign take the comment's one private reply before a nudge", async () => {
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    // Returned in the order the DB gives them: nudge first, link second.
+    mockPrisma.automation.findMany.mockResolvedValue([
+      { ...nudgeAutomation, id: "auto_nudge" },
+      { ...mockAutomation, id: "auto_link", matchAnyWord: true },
+    ]);
+
+    // Instagram allows one private reply per comment, and the worker enforces
+    // that by looking for another campaign's SENT row. Model that here: once a
+    // reply goes out, the lookup starts finding it.
+    let replySent = false;
+    mockSendPrivateReply.mockImplementation(async () => {
+      replySent = true;
+      return { recipient_id: "commenter_999", message_id: "msg_001" };
+    });
+    mockPrisma.dmLog.findFirst.mockImplementation(
+      async (args: { where?: { status?: string } } = {}) => {
+        if (args.where?.status === "SENT") {
+          return replySent ? { automation: { name: "Link campaign" } } : null;
+        }
+        return { commenterName: "commenter_user" };
+      }
+    );
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    // The link campaign sent first; the nudge saw the reply was used and stood down.
+    expect(mockSendPrivateReply).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          automationId_commentId: {
+            automationId: "auto_link",
+            commentId: "comment_555",
+          },
+        },
+        data: expect.objectContaining({ status: "SENT" }),
+      })
+    );
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          automationId_commentId: {
+            automationId: "auto_nudge",
+            commentId: "comment_555",
+          },
+        },
+        data: expect.objectContaining({ status: "SKIPPED_DEDUP" }),
       })
     );
   });

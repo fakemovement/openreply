@@ -10,6 +10,9 @@ const statusConfig: Record<string, { text: string; label: string }> = {
   SKIPPED_RATE_LIMIT: { text: "text-warning", label: "Rate limited" },
   SKIPPED_PLAN_LIMIT: { text: "text-warning", label: "Skipped" },
   SKIPPED_NO_MATCH: { text: "text-muted", label: "No match" },
+  // Follow-nudge outcomes: nothing was sent, and that was the point.
+  SKIPPED_ALREADY_FOLLOWS: { text: "text-muted", label: "Already follows" },
+  SKIPPED_FOLLOW_UNKNOWN: { text: "text-muted", label: "Follow unknown" },
 };
 
 interface StatusBadgeProps {

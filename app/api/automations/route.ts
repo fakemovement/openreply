@@ -83,7 +83,8 @@ const createAutomationSchema = z
     keywords: z.array(z.string().min(1).max(50)).max(10).optional().default([]),
     matchAnyWord: z.boolean().optional().default(false),
     dmTriggerEnabled: z.boolean().optional().default(false),
-    dmMessage: z.string().min(1).max(1000),
+    // A follow-nudge campaign delivers no link, so it has no link DM to write.
+    dmMessage: z.string().max(1000),
     openingDmEnabled: z.boolean().optional().default(false),
     openingDmMessage: z.string().max(1000).optional().nullable(),
     openingDmButtonLabel: z.string().max(64).optional().nullable(),
@@ -91,6 +92,9 @@ const createAutomationSchema = z
     requireFollow: z.boolean().optional().default(false),
     followPromptMessage: z.string().max(1000).optional().nullable(),
     followPromptButtonLabel: z.string().max(20).optional().nullable(),
+    followNudgeEnabled: z.boolean().optional().default(false),
+    followNudgeMessage: z.string().max(1000).optional().nullable(),
+    nudgeUnknownContacts: z.boolean().optional().default(false),
     followUpEnabled: z.boolean().optional().default(false),
     followUpMessage: z.string().max(1000).optional().nullable(),
     // Minutes to wait before the follow-up. Capped at 24h so it stays inside
@@ -134,6 +138,17 @@ const createAutomationSchema = z
       (Boolean(d.openingDmMessage?.trim()) &&
         Boolean(d.openingDmButtonLabel?.trim())),
     { message: "Opening DM needs a message and a button label", path: ["openingDmMessage"] }
+  )
+  // A follow nudge needs its own message; every other campaign needs the link DM.
+  .refine(
+    (d) =>
+      d.followNudgeEnabled
+        ? Boolean(d.followNudgeMessage?.trim())
+        : Boolean(d.dmMessage.trim()),
+    {
+      message: "Write the message this campaign sends",
+      path: ["dmMessage"],
+    }
   );
 
 const updateAutomationSchema = z.object({
@@ -154,6 +169,9 @@ const updateAutomationSchema = z.object({
   requireFollow: z.boolean().optional(),
   followPromptMessage: z.string().max(1000).optional().nullable(),
   followPromptButtonLabel: z.string().max(20).optional().nullable(),
+  followNudgeEnabled: z.boolean().optional(),
+  followNudgeMessage: z.string().max(1000).optional().nullable(),
+  nudgeUnknownContacts: z.boolean().optional(),
   followUpEnabled: z.boolean().optional(),
   followUpMessage: z.string().max(1000).optional().nullable(),
   followUpDelayMinutes: z.number().int().min(0).max(1440).optional(),
@@ -460,6 +478,13 @@ export async function POST(request: NextRequest) {
       followPromptButtonLabel: parsed.data.requireFollow
         ? parsed.data.followPromptButtonLabel || null
         : null,
+      followNudgeEnabled: parsed.data.followNudgeEnabled,
+      followNudgeMessage: parsed.data.followNudgeEnabled
+        ? parsed.data.followNudgeMessage || null
+        : null,
+      nudgeUnknownContacts: parsed.data.followNudgeEnabled
+        ? parsed.data.nudgeUnknownContacts
+        : false,
       followUpEnabled: parsed.data.followUpEnabled,
       followUpMessage: parsed.data.followUpEnabled
         ? parsed.data.followUpMessage || null
@@ -558,6 +583,10 @@ export async function PATCH(request: NextRequest) {
   if (automationData.requireFollow === false) {
     automationData.followPromptMessage = null;
     automationData.followPromptButtonLabel = null;
+  }
+  if (automationData.followNudgeEnabled === false) {
+    automationData.followNudgeMessage = null;
+    automationData.nudgeUnknownContacts = false;
   }
   if (automationData.followUpEnabled === false) {
     automationData.followUpMessage = null;

@@ -141,8 +141,36 @@ model InstagramAccount {
   dmLogs      DmLog[]
   linkClicks  LinkClick[]
   followerSnapshots FollowerSnapshot[]
+  followStates      ContactFollowState[]
 
   @@index([workspaceId])
+}
+
+/// What we know about one Instagram user's relationship to one connected
+/// account. Instagram only answers `is_user_follow_business` for people who
+/// have messaged the account — a plain commenter gets "user consent is
+/// required" — so every answer we ever manage to read is written down here and
+/// reused later, when the live call would refuse.
+model ContactFollowState {
+  id                 String @id @default(cuid())
+  instagramAccountId String
+  /// The person's Instagram-scoped id — the same id a comment webhook carries.
+  contactId          String
+  follows            Boolean
+  /// When `follows` was last read from Instagram. Anything older than
+  /// FOLLOW_STATE_TTL_MS is a hint to fall back on, not a fresh fact.
+  checkedAt          DateTime @default(now())
+  /// Last time a follow nudge went out to this person, so a non-follower who
+  /// comments every day is asked once, not daily.
+  nudgedAt           DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  instagramAccount InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([instagramAccountId, contactId])
+  @@index([instagramAccountId])
 }
 
 /// Daily follower total for one account. Instagram only retains ~30 days of
@@ -190,6 +218,17 @@ model Automation {
   requireFollow           Boolean @default(false)
   followPromptMessage     String?
   followPromptButtonLabel String?
+  // Follow nudge. A different job from requireFollow: it withholds nothing and
+  // delivers no link. The campaign exists only to DM the people who comment
+  // WITHOUT following, and to stay silent for everyone else. Turning it on
+  // makes the campaign nudge-only — the link legs above never run.
+  followNudgeEnabled      Boolean @default(false)
+  followNudgeMessage      String?
+  // What to do about a commenter Instagram will not describe (they have never
+  // messaged the account, so their follow status is unreadable). Off: stay
+  // silent, which is the safe default — no follower is ever nudged by mistake,
+  // at the cost of never nudging a stranger either.
+  nudgeUnknownContacts    Boolean @default(false)
   followUpEnabled Boolean @default(false)
   followUpMessage String?
   // Minutes to wait after the link is delivered before sending the follow-up.
@@ -366,6 +405,10 @@ enum DmStatus {
   SKIPPED_RATE_LIMIT
   SKIPPED_PLAN_LIMIT
   SKIPPED_NO_MATCH
+  // Follow-nudge outcomes. Nothing was sent, and that was the correct result:
+  // the commenter already follows, or Instagram would not say either way.
+  SKIPPED_ALREADY_FOLLOWS
+  SKIPPED_FOLLOW_UNKNOWN
 }
 
 enum WebhookStatus {

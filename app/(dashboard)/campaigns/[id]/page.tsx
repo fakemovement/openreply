@@ -29,6 +29,9 @@ interface Campaign {
   openingDmButtonLabel: string | null;
   linkButtonLabel: string | null;
   requireFollow: boolean;
+  followNudgeEnabled?: boolean;
+  followNudgeMessage?: string | null;
+  nudgeUnknownContacts?: boolean;
   followPromptMessage: string | null;
   followPromptButtonLabel: string | null;
   followUpEnabled: boolean;
@@ -228,14 +231,27 @@ export default function CampaignDetailPage() {
           )}
         </Summary>
 
-        {campaign.openingDmEnabled && (
+        {campaign.followNudgeEnabled && (
+          <Summary title="Only the ones who don't follow get a DM">
+            <FieldBox>
+              {campaign.followNudgeMessage || "Follow-me message"}
+            </FieldBox>
+            <FieldBox>
+              {campaign.nudgeUnknownContacts
+                ? "Also DMs people Instagram won't let us check"
+                : "Silent for followers, and for anyone we can't check"}
+            </FieldBox>
+          </Summary>
+        )}
+
+        {!campaign.followNudgeEnabled && campaign.openingDmEnabled && (
           <Summary title="They will get an opening DM">
             <FieldBox>{campaign.openingDmMessage || "Opening message"}</FieldBox>
             <FieldBox>{campaign.openingDmButtonLabel || "Button"}</FieldBox>
           </Summary>
         )}
 
-        {campaign.requireFollow && (
+        {!campaign.followNudgeEnabled && campaign.requireFollow && (
           <Summary title="They must follow first">
             <FieldBox>
               {campaign.followPromptMessage ||
@@ -247,6 +263,7 @@ export default function CampaignDetailPage() {
           </Summary>
         )}
 
+        {!campaign.followNudgeEnabled && (
         <Summary title="And then, they will get a DM">
           <FieldBox>{campaign.dmMessage}</FieldBox>
           {hasLink && (
@@ -258,6 +275,7 @@ export default function CampaignDetailPage() {
             </FieldBox>
           )}
         </Summary>
+        )}
 
         {hasLink && (
           <Summary title="The exact link sent">
@@ -352,8 +370,12 @@ export default function CampaignDetailPage() {
             openingDmEnabled={campaign.openingDmEnabled}
             openingDmMessage={campaign.openingDmMessage ?? ""}
             openingDmButtonLabel={campaign.openingDmButtonLabel ?? ""}
-            revealMessage={campaign.dmMessage}
-            hasLink={hasLink}
+            revealMessage={
+              campaign.followNudgeEnabled
+                ? campaign.followNudgeMessage ?? ""
+                : campaign.dmMessage
+            }
+            hasLink={!campaign.followNudgeEnabled && hasLink}
             linkButtonLabel={campaign.linkButtonLabel ?? "Open link"}
             linkUrl={
               campaign.trackedLinks?.[0]?.trackedUrl ??
@@ -363,7 +385,9 @@ export default function CampaignDetailPage() {
             secondLinkButtonLabel={
               campaign.trackedLinks?.[1]?.label ?? "Open link"
             }
-            requireFollow={campaign.requireFollow}
+            requireFollow={
+              !campaign.followNudgeEnabled && campaign.requireFollow
+            }
             followPromptMessage={campaign.followPromptMessage ?? ""}
             followPromptButtonLabel={
               campaign.followPromptButtonLabel ?? "i'm following"
